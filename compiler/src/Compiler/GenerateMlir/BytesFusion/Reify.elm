@@ -334,7 +334,10 @@ reifyEncoderHelpStrict bodyLookup registry exprCache expr =
         Mono.MonoLet def body _ ->
             case def of
                 Mono.MonoDef name defExpr ->
-                    Just (reifyEncoderHelp bodyLookup registry (Dict.insert name defExpr exprCache) body)
+                    Just
+                        (List.map (letInNode name defExpr)
+                            (reifyEncoderHelp bodyLookup registry (Dict.insert name defExpr exprCache) body)
+                        )
 
                 _ ->
                     Nothing
@@ -461,12 +464,90 @@ pure and are merged later.
 
 -}
 destructInNode : Mono.MonoDestructor -> EncoderNode -> EncoderNode
-destructInNode destructor node =
-    let
-        wrap : Mono.MonoExpr -> Mono.MonoExpr
-        wrap expr =
-            Mono.MonoDestruct destructor expr (Mono.typeOf expr)
+destructInNode destructor =
+    mapNodeExprs (\expr -> Mono.MonoDestruct destructor expr (Mono.typeOf expr))
 
+
+{-| Puts the binding of `name` to `bound` around every expression in `node`
+that refers to `name`.
+
+A `let` inside an encoder, such as `tile` in
+
+    encode (Tri t) =
+        let
+            tile = Maybe.withDefault zero t.tile
+        in
+        sequence [ unsignedInt32 LE tile.left, ... ]
+
+is looked through to find the encoder, so nothing else compiles it. Each value
+that reads it gets the binding, as with `destructInNode`. That includes a
+destructuring of it, `let (Tri t) = f x`, which binds `_v0 = f x` and reads
+`_v0` in its path.
+
+-}
+letInNode : Name -> Mono.MonoExpr -> EncoderNode -> EncoderNode
+letInNode name bound =
+    mapNodeExprs
+        (\expr ->
+            if readsLocal name expr then
+                Mono.MonoLet (Mono.MonoDef name bound) expr (Mono.typeOf expr)
+
+            else
+                expr
+        )
+
+
+{-| Whether `expr` reads the local variable `name`.
+-}
+readsLocal : Name -> Mono.MonoExpr -> Bool
+readsLocal name expr =
+    MonoTraverse.foldExpr
+        (\e found ->
+            found
+                || (case e of
+                        Mono.MonoVarLocal n _ ->
+                            n == name
+
+                        Mono.MonoTailCall n _ _ ->
+                            n == name
+
+                        Mono.MonoCase _ root _ _ _ ->
+                            root == name
+
+                        Mono.MonoDestruct (Mono.MonoDestructor _ path _) _ _ ->
+                            pathRoot path == name
+
+                        _ ->
+                            False
+                   )
+        )
+        False
+        expr
+
+
+{-| The variable a destructuring path starts from.
+-}
+pathRoot : Mono.MonoPath -> Name
+pathRoot path =
+    case path of
+        Mono.MonoRoot root _ ->
+            root
+
+        Mono.MonoIndex _ _ _ sub ->
+            pathRoot sub
+
+        Mono.MonoField _ _ sub ->
+            pathRoot sub
+
+        Mono.MonoUnbox _ sub ->
+            pathRoot sub
+
+
+{-| Applies `f` to every expression in `node`.
+-}
+mapNodeExprs : (Mono.MonoExpr -> Mono.MonoExpr) -> EncoderNode -> EncoderNode
+mapNodeExprs wrap node =
+    let
         wrapFixed : FixedWrite -> FixedWrite
         wrapFixed write =
             case write of
